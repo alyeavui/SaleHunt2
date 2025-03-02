@@ -8,6 +8,7 @@ from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.filters import Command
 import asyncpg
+import re
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -28,6 +29,8 @@ async def create_db_pool():
 
 async def on_startup():
     await create_db_pool()
+
+
 
 lang_keyboard = ReplyKeyboardMarkup(
     keyboard=[
@@ -93,28 +96,17 @@ async def discount_handler(message: types.Message):
         resize_keyboard=True
     )
     await message.answer("Выберите подкатегорию скидок:", reply_markup=keyboard)
+category_translation = {
+    "🍔 Еда": "Food",
+    "🏋️ Спорт": "Sports",
+    "👕 Одежда": "Clothing",
+    "🍔 Food": "Food",
+    "🏋️ Sports": "Sports",
+    "👕 Clothing": "Clothing"
+}
 
-@dp.message(F.text.in_(sum(discount_categories.values(), [])))
-async def discount_subcategory_handler(message: types.Message):
-    if not db_pool:
-        await message.answer("Ошибка: нет соединения с базой данных.")
-        return
-    
-    subcategory = message.text
-    async with db_pool.acquire() as conn:
-        discounts = await conn.fetch("SELECT name, discount, link FROM discounts WHERE category = $1", subcategory)
-    
-    if discounts:
-        response = "\n\n".join([f"<b>{d['name']}</b>\nСкидка: {d['discount']}%\n<a href='{d['link']}'>Подробнее</a>" for d in discounts])
-    else:
-        response = "В этой категории пока нет скидок."
-
-    await message.answer(response, disable_web_page_preview=True)
-
-@dp.message(F.text.in_(["📍 Көмек", "📍 Помощь", "📍 Help"]))
-async def help_handler(message: types.Message):
-    await message.answer("Для получения информации о скидках выберите категорию и подкатегорию. Если у вас есть вопросы, обратитесь к администратору.")
-
+def remove_emojis(text):
+    return re.sub(r"[^\w\s]", "", text).strip()
 @dp.message(F.text.in_(["🔙 Артқа", "🔙 Назад", "🔙 Back"]))
 async def back_handler(message: types.Message):
     lang_map = {
@@ -124,6 +116,57 @@ async def back_handler(message: types.Message):
     }
     selected_lang = lang_map[message.text]
     await message.answer("Выберите категорию / Санатты таңдаңыз / Choose a category:", reply_markup=categories[selected_lang])
+
+
+@dp.message(F.text.in_(sum(discount_categories.values(), [])))
+async def discount_subcategory_handler(message: types.Message):
+    if not db_pool:
+        await message.answer("Ошибка: нет соединения с базой данных.")
+        return
+
+    # Убираем эмодзи и лишние пробелы
+    subcategory = message.text.strip().replace("🍔", "").replace("🏋️", "").replace("👕", "").strip()
+
+    # 🔄 Словарь перевода на английский (как в БД)
+    translation_map = {
+        "Еда": "Food",
+        "Спорт": "Sport",
+        "Одежда": "Clothing",
+        "Food": "Food",
+        "Sports": "Sport",
+        "Clothing": "Clothing"
+    }
+
+    # Если категория есть в словаре — переводим в английский вариант
+    subcategory = translation_map.get(subcategory, subcategory)
+
+    print(f"Выбранная категория: {subcategory}")
+
+    async with db_pool.acquire() as conn:
+        categories_in_db = await conn.fetch("SELECT DISTINCT category FROM discounts")
+        db_categories = [row["category"] for row in categories_in_db]
+
+    print(f"Категории в базе данных: {db_categories}")
+
+    if subcategory not in db_categories:
+        await message.answer("Категория не найдена в базе данных.")
+        return
+
+    async with db_pool.acquire() as conn:
+        discounts = await conn.fetch("SELECT name, discount, link FROM discounts WHERE category = $1", subcategory)
+
+    if discounts:
+        response = "\n\n".join([f"<b>{d['name']}</b>\nСкидка: {d['discount']}%\n<a href='{d['link']}'>Подробнее</a>" for d in discounts])
+    else:
+        response = "В этой категории пока нет скидок."
+
+    await message.answer(response, disable_web_page_preview=True)
+
+
+@dp.message(F.text.in_(["📍 Көмек", "📍 Помощь", "📍 Help"]))
+async def help_handler(message: types.Message):
+    await message.answer("Для получения информации о скидках выберите категорию и подкатегорию. Если у вас есть вопросы, обратитесь к администратору.")
+
 
 async def main():
     await on_startup()
