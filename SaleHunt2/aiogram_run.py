@@ -1,9 +1,10 @@
 import asyncio
 import os
+import logging
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.enums import ParseMode
 from aiogram.client.default import DefaultBotProperties
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton, InputMediaPhoto
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.filters import Command
 import asyncpg
@@ -14,17 +15,19 @@ load_dotenv()
 TOKEN = os.getenv("BOT_TOKEN")
 DB_URL = os.getenv("PG_LINK")
 
+logging.basicConfig(level=logging.INFO)
+
 bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher(storage=MemoryStorage())
 
-async def create_db_pool():
-    return await asyncpg.create_pool(DB_URL)
-
 db_pool = None
 
-async def on_startup():
+async def create_db_pool():
     global db_pool
-    db_pool = await create_db_pool()
+    db_pool = await asyncpg.create_pool(DB_URL)
+
+async def on_startup():
+    await create_db_pool()
 
 lang_keyboard = ReplyKeyboardMarkup(
     keyboard=[
@@ -57,94 +60,74 @@ categories = {
     )
 }
 
-subcategories = {
-    "Жеңілдіктер санаттары": ReplyKeyboardMarkup(
-        keyboard=[
-            [KeyboardButton(text="🥗 Тамақ"), KeyboardButton(text="👕 Киім"), KeyboardButton(text="🏋🏻‍♀️ Спорт")],
-            [KeyboardButton(text="Артқа")]
-        ],
-        resize_keyboard=True
-    ),
-    "Категории скидок": ReplyKeyboardMarkup(
-        keyboard=[
-            [KeyboardButton(text="🥗 Еда"), KeyboardButton(text="👕 Одежда"), KeyboardButton(text="🏋🏻‍♀️ Спорт")],
-            [KeyboardButton(text="Назад")]
-        ],
-        resize_keyboard=True
-    ),
-    "Discount Categories": ReplyKeyboardMarkup(
-        keyboard=[
-            [KeyboardButton(text="🥗 Food"), KeyboardButton(text="👕 Clothes"), KeyboardButton(text="🏋🏻‍♀️ Sport")],
-            [KeyboardButton(text="Back")]
-        ],
-        resize_keyboard=True
-    )
+discount_categories = {
+    "Қазақша": ["🍔 Еда", "🏋️ Спорт", "👕 Одежда", "🔙 Артқа"],
+    "Русский": ["🍔 Еда", "🏋️ Спорт", "👕 Одежда", "🔙 Назад"],
+    "English": ["🍔 Food", "🏋️ Sports", "👕 Clothing", "🔙 Back"]
 }
 
 @dp.message(Command("start"))
 async def start_command(message: types.Message):
     await message.answer("Выберите язык / Тілді таңдаңыз / Choose a language:", reply_markup=lang_keyboard)
 
-@dp.message(F.text.in_(categories.keys()))
-async def category_handler(message: types.Message):
-    await message.answer("Выберите категорию / Санатты таңдаңыз / Choose a category:", reply_markup=categories[message.text])
+@dp.message(F.text.in_(["🇰🇿 Қазақша", "🇷🇺 Русский", "🇺🇸 English"]))
+async def language_handler(message: types.Message):
+    lang_map = {
+        "🇰🇿 Қазақша": "Қазақша",
+        "🇷🇺 Русский": "Русский",
+        "🇺🇸 English": "English"
+    }
+    selected_lang = lang_map[message.text]  
+    await message.answer("Выберите категорию / Санатты таңдаңыз / Choose a category:", reply_markup=categories[selected_lang])
 
-@dp.message(F.text.in_(subcategories.keys()))
-async def subcategory_handler(message: types.Message):
-    await message.answer("Выберите подкатегорию / Ішкі санатты таңдаңыз / Choose a subcategory:", reply_markup=subcategories[message.text])
-
-async def get_discounts(category):
-    async with db_pool.acquire() as connection:
-        return await connection.fetch("SELECT name, discount, link, image_url FROM discounts WHERE category = $1", category)
-
-@dp.message(F.text.in_(["Тамақ", "Киім", "Спорт", "Еда", "Одежда", "Спорт", "Food", "Clothes", "Sport"]))
-async def show_discounts(message: types.Message):
-    discounts = await get_discounts(message.text)
-    if not discounts:
-        await message.answer("Нет актуальных скидок.")
-        return
-
-    discount = discounts[0] 
-
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="⬅", callback_data=f"nav_{len(discounts)-1}_{message.text}"),
-         InlineKeyboardButton(text="➡", callback_data=f"nav_1_{message.text}")]
-    ])
-
-    await message.answer_photo(
-        photo=discount["image_url"], 
-        caption=f"{discount['name']} - {discount['discount']}%\n<a href='{discount['link']}'>Подробнее</a>",
-        reply_markup=keyboard
+@dp.message(F.text.in_(["🛍 Жеңілдіктер санаттары", "🛍 Категории скидок", "🛍 Discount Categories"]))
+async def discount_handler(message: types.Message):
+    lang_map = {
+        "🛍 Жеңілдіктер санаттары": "Қазақша",
+        "🛍 Категории скидок": "Русский",
+        "🛍 Discount Categories": "English"
+    }
+    selected_lang = lang_map[message.text]
+    keyboard = ReplyKeyboardMarkup(
+        keyboard=[[KeyboardButton(text=cat)] for cat in discount_categories[selected_lang]],
+        resize_keyboard=True
     )
+    await message.answer("Выберите подкатегорию скидок:", reply_markup=keyboard)
 
-@dp.callback_query(F.data.startswith("nav_"))
-async def navigate_gallery(callback_query: types.CallbackQuery):
-    data = callback_query.data.split("_")  
-    index = int(data[1])  
-    category = data[2]  
-
-    discounts = await get_discounts(category)
-    if not discounts:
-        await callback_query.answer("Нет актуальных скидок.")
+@dp.message(F.text.in_(sum(discount_categories.values(), [])))
+async def discount_subcategory_handler(message: types.Message):
+    if not db_pool:
+        await message.answer("Ошибка: нет соединения с базой данных.")
         return
-
-    index = (index + 1) % len(discounts) if "next" in data[0] else (index - 1) % len(discounts)
     
-    discount = discounts[index]
+    subcategory = message.text
+    async with db_pool.acquire() as conn:
+        discounts = await conn.fetch("SELECT name, discount, link FROM discounts WHERE category = $1", subcategory)
+    
+    if discounts:
+        response = "\n\n".join([f"<b>{d['name']}</b>\nСкидка: {d['discount']}%\n<a href='{d['link']}'>Подробнее</a>" for d in discounts])
+    else:
+        response = "В этой категории пока нет скидок."
 
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="⬅", callback_data=f"nav_{index-1}_{category}"),
-         InlineKeyboardButton(text="➡", callback_data=f"nav_{index+1}_{category}")]
-    ])
+    await message.answer(response, disable_web_page_preview=True)
 
-    await callback_query.message.edit_media(
-        media=InputMediaPhoto(media=discount["image_url"], caption=f"{discount['name']} - {discount['discount']}%\n<a href='{discount['link']}'>Подробнее</a>"),
-        reply_markup=keyboard
-    )
+@dp.message(F.text.in_(["📍 Көмек", "📍 Помощь", "📍 Help"]))
+async def help_handler(message: types.Message):
+    await message.answer("Для получения информации о скидках выберите категорию и подкатегорию. Если у вас есть вопросы, обратитесь к администратору.")
+
+@dp.message(F.text.in_(["🔙 Артқа", "🔙 Назад", "🔙 Back"]))
+async def back_handler(message: types.Message):
+    lang_map = {
+        "🔙 Артқа": "Қазақша",
+        "🔙 Назад": "Русский",
+        "🔙 Back": "English"
+    }
+    selected_lang = lang_map[message.text]
+    await message.answer("Выберите категорию / Санатты таңдаңыз / Choose a category:", reply_markup=categories[selected_lang])
 
 async def main():
     await on_startup()
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    asyncio.run(main() )
